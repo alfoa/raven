@@ -28,14 +28,27 @@ from  __builtin__ import any as bAny
 from CodeInterfaceBaseClass import CodeInterfaceBase
 import phisicsdata
 import xml.etree.ElementTree as ET
-import tarfile
+from xml.etree.ElementTree import Element, SubElement, Comment
+from xml.dom import minidom
+import fileinput 
+import sys
 
 
 class Phisics(CodeInterfaceBase):
   """
     this class is used a part of a code dictionary to specialize Model.Code for RELAP5-3D Version 4.0.3
-  """
-  
+  """ 
+  def getFilename(self):
+    """
+      Retriever for full filename.
+      @ In, None
+      @ Out, __base, string, filename
+    """
+    if self.__ext is not None:
+      return '.'.join([self.__base,self.__ext])
+    else:
+      return self.__base
+      
   def getPath(self):
     """
       Retriever for path.
@@ -50,11 +63,113 @@ class Phisics(CodeInterfaceBase):
       @ In, None
       @ Out, __base, string path
     """
-    return self.__base
+    return self.__base 
   
-  def distributeVariablesToParsers(self, perturbedVars):
+  def getNumberOfMPI(self,string):
     """
-      This module take the perturbedVars dictionary. perturbedVars contains all the variables to be perturbed. 
+      gets the number of MPI requested by the user in the RAVEN input
+      @ In, string, string, string from the Kwargs containing the number of MPI
+      @ Out, MPInumber, integer, number of MPI used in the calculation
+    """
+    return int(string.split(" ")[-2])
+    
+  def outputFileNames(self,pathFile):
+    """
+      Collects the output file names from lib_inp_path xml file
+      @ In, pathFile, string, lib_path_input file 
+      @ Out, outputFileNameDict, dictionary, dictionary containing the output file names
+    """
+    pathTree = ET.parse(pathFile)
+    pathRoot = pathTree.getroot()
+    self.outputFileNameDict = {}
+    xmlNodes = ['reactions','atoms_plot','atoms_csv','decay_heat','bu_power','flux','repository']
+    for xmlNodeNumber in xrange (0,len(xmlNodes)):
+      for xmlNode in pathRoot.getiterator(xmlNodes[xmlNodeNumber]):
+        self.outputFileNameDict[xmlNodes[xmlNodeNumber]] = xmlNode.text
+    #print (self.outputFileNameDict)
+  
+  def syncLibPathFileWithRavenInp(self,pathFile,currentInputFiles,keyWordDict):
+    """
+      parses the lib_file input and writes the correct library path in the lib_path.xml, based in the raven input 
+      @ In, pathFile, string, lib_path_input file
+      @ Out, pathFile, string, lib_path_input file, updated with user-defined path
+    """
+    pathTree = ET.parse(pathFile)
+    pathRoot = pathTree.getroot()
+    typeList = ['IsotopeList','mass','decay','budep','FissionYield','FissQValue','CRAM_coeff_PF','N,G','N,Gx','N,2N','N,P','N,ALPHA','AlphaDecay','BetaDecay','BetaxDecay','Beta+Decay','Beta+xDecay','IntTraDecay']
+    libPathList = ['iso_list_inp','mass_a_weight_inp','decay_lib','xs_sep_lib','fiss_yields_lib','fiss_q_values_lib','cram_lib','n_gamma','n_gamma_ex','n_2n','n_p','n_alpha','alpha','beta','beta_ex','beta_plus','beta_plus_ex','int_tra']
+    
+    for typeNumber in xrange(0,len(typeList)):
+      for libPathText in pathRoot.getiterator(libPathList[typeNumber]):
+        libPathText.text = currentInputFiles[keyWordDict[typeList[typeNumber].lower()]].getAbsFile() 
+    pathTree.write(pathFile)
+    
+  def syncPathToLibFile(self,depletionRoot,depletionFile,depletionTree,libPathFile):
+    """
+      gets the name of the file that contains the path to the libraries. The default name is 
+      @ In, depletionRoot, XML tree from the depletion_input.xml
+      @ In, depletionFile, path to depletion_input.xml
+      @ Out, pathToLibFile, string,  
+    """
+    if depletionTree.find('.//input_files') is None:  
+      for line in fileinput.input(depletionFile, inplace = 1):
+        if '<DEPLETION_INPUT>' in line:
+          line = line.replace('<DEPLETION_INPUT>','<DEPLETION_INPUT>'+'\n\t'+'<input_files>'+libPathFile+'</input_files>')
+        sys.stdout.write(line)
+    else:
+      depletionTree.find('.//input_files').text = libPathFile
+      depletionTree.write(depletionFile)
+    
+  def getTitle(self, depletionRoot):
+    """
+      get the job title. It will become later the instant output file name. If the title flag is not in the 
+      instant input, the job title is defaulted to 'defaultInstant'
+      @ In, self.mrtauStandAlone, True = mrtau is ran standalone, False = mrtau in not ran standalone
+      @ In, depletionRoot, XML tree from the depletion_input.xml
+      @ Out, jobTitle, string 
+    """
+    jobTitle = 'defaultInstant'
+    for child in depletionRoot.findall(".//title"):
+      jobTitle = str(child.text)
+      break 
+    return jobTitle
+    
+  def verifyMrtauFlagsAgree(self, depletionRoot):
+    """
+      Verifies the node "standalone"'s text in the depletion_input xml. if the standalone flag 
+      in the depletion_input disagrees with the mrtau standalone flag in the raven input, 
+      the codes errors out
+      @ In, mrtauStandAlone, True = mrtau is ran standalone, False = mrtau in not ran standalone
+      @ In, depletionRoot, XML tree from the depletion_input.xml
+      @ Out, None
+    """
+    for child in depletionRoot.findall(".//standalone"):
+      isMrtauStandAlone = child.text.lower()
+      tag = child.tag
+      break 
+    if self.mrtauStandAlone == False and isMrtauStandAlone == 'yes':
+      raise  ValueError("\n\n Error. The flags controlling the Mrtau standalone mode are incorrect. The node <standalone> in depletion_input file disagrees with the node <mrtauStandAlone> in the raven input. \n the matching solutions are: <mrtauStandAlone>yes</mrtauStandAlone> and <"+tag+">True<"+tag+">\n <mrtauStandAlone>no</mrtauStandAlone> and <"+tag+">False<"+tag+">")
+    if self.mrtauStandAlone == True and isMrtauStandAlone == 'no':
+      raise  ValueError("\n\n Error. The flags controlling the Mrtau standalone mode are incorrect. The node <standalone> in depletion_input file disagrees with the node <mrtauStandAlone> in the raven input. \n the matching solutions are: <mrtauStandAlone>yes</mrtauStandAlone> and <"+tag+">True<"+tag+">\n <mrtauStandAlone>no</mrtauStandAlone> and <"+tag+">False<"+tag+">")
+  
+  def parseControlOptions(self,depletionFile,libPathFile):
+    """
+      Parse the Material.xml data file and put the isotopes name as key and 
+      the decay constant relative to the isotopes as values 
+      @ In, depletionFile, string, depletion_input file
+      @ In, libpathFile, string, lib_inp_path file 
+      @ In, inpFile, string, Instant input file 
+    """  
+    depletionTree = ET.parse(depletionFile)
+    depletionRoot = depletionTree.getroot()
+    self.verifyMrtauFlagsAgree(depletionRoot)
+    jobTitle = self.getTitle(depletionRoot)
+    self.syncPathToLibFile(depletionRoot,depletionFile,depletionTree,libPathFile)
+    return jobTitle
+  
+  def distributeVariablesToParsers(self,perturbedVars):
+    """
+      This module takes the perturbedVars dictionary. perturbedVars contains all the variables to be perturbed. 
       The module transform the dictionary into dictionary of dictionary. This dictionary renders easy the distribution 
       of the variable to their corresponding parser. For example, if the two variables are the following: 
       {'FY|FAST|PU241|SE78':1.0, 'DECAY|BETA|U235':2.0}, the output dict will be: 
@@ -77,39 +192,7 @@ class Phisics(CodeInterfaceBase):
       for j in xrange (0,len(pertType)):
         if splittedKeywords[0] == pertType[j] :
           distributedPerturbedVars[pertType[j]][key] = value
-    #print (distributedPerturbedVars)
     return distributedPerturbedVars
-  
-  def mapFile(self, driverXML):
-    """
-      This module map the "type" in the XML tree and locate, and associate the "type" value to a number. 
-      this number is then used as an index to associate the correct files to be perturbed to the corresponding 
-      parsers
-      In: Driver input file (xml file)
-      out: mapDict, dictionary, key is the "type", the value is a number
-    """
-    stepDict = {}
-    fileDict = {}
-    mapDict = {}
-    stepCount = 0 
-    tree = ET.parse(driverXML)
-    root = tree.getroot()
-    for stepsXML in root.getiterator('Steps'):
-      for inputXML in stepsXML.getiterator('Input'): 
-        #print (fileCount)
-        #print (inputXML.attrib)
-        #print (inputXML.text)
-        stepDict[inputXML.text.lower()] = stepCount
-        stepCount = stepCount + 1  
-    for filesXML in root.getiterator('Files'):
-      for inputXML in filesXML.getiterator('Input'): 
-        fileDict[inputXML.attrib.get('type').lower()] = inputXML.text.lower()
-    #for typeName, fileName in fileDict.item():
-    #  for stepName, mapNumber in stepDict():
-    mapDict = {k:stepDict[v] for k,v in fileDict.iteritems()}    
-    #print (fileDict)
-    #print (mapDict)
-    return mapDict
   
   def addDefaultExtension(self):
     self.addInputExtension(['xml','dat','path'])
@@ -126,11 +209,35 @@ class Phisics(CodeInterfaceBase):
     validPerturbation = ['additive', 'multiplicative', 'absolute']
     self.perturbXS = validPerturbation[1] # default is cross section perturbation multiplicative mode
     setOfPerturbations = set(validPerturbation)
+    #default values if the flag is not in the raven input  
+    self.tabulation = True
+    self.mrtauStandAlone = False
+    self.mrtauExecutable = None 
     for child in xmlNode:
       if child.tag == 'PerturbXS':
         if child.text.lower() in set(validPerturbation): self.perturbXS = child.text.lower()
         else: raise ValueError("\n\nThe type of perturbation --"+child.text.lower()+"-- is not valid. You can choose one of the following \n"+"\n".join(set(validPerturbation)))
-
+      if child.tag == 'tabulation':
+        self.tabulation = None
+        if (child.text.lower() == 't' or child.text.lower() == 'true'):  self.tabulation = True
+        if (child.text.lower() == 'f' or child.text.lower() == 'false'): self.tabulation = False 
+        if (self.tabulation is None): raise ValueError("\n\n The tabulation node -- <"+child.tag+"> -- only supports the following text (case insensitive): \n True \n T \n False \n F" )
+      if child.tag == 'mrtauStandAlone':
+        self.mrtauStandAlone = None 
+        if (child.text.lower() == 't' or child.text.lower() == 'true'):  self.mrtauStandAlone = True 
+        if (child.text.lower() == 'f' or child.text.lower() == 'false'):  self.mrtauStandAlone = False 
+        if (self.mrtauStandAlone is None): raise ValueError("\n\n The flag activating MRTAU standalone mode -- <"+child.tag+"> -- only supports the following text (case insensitive): \n True \n T \n False \n F. \n Default Value is False" )
+      if child.tag == 'mrtauStandAloneExecutable' and self.mrtauStandAlone == True:
+        self.mrtauExecutable = child.text
+        
+  def switchExecutable(self):
+    """
+      This module replaces the executable if the user chooses to use MRTAU in standalone mode. 
+      @ In, None 
+      @ Out, mrtauExecutable, string, absolute path to mrtau executable
+    """
+    return self.mrtauExecutable
+   
   def generateCommand(self,inputFiles,executable,clargs=None,fargs=None):
     """
       This method is used to retrieve the command (in tuple format) needed to launch the Code.
@@ -143,71 +250,50 @@ class Phisics(CodeInterfaceBase):
       @ In, fargs, dict, optional, a dictionary containing the axuiliary input file variables the user can specify in the input (e.g. under the node < Code >< clargstype =0 input0arg =0 aux0extension =0 .aux0/ >< /Code >)
       @ Out, returnCommand, tuple, tuple containing the generated command. returnCommand[0] is the command to run the code (string), returnCommand[1] is the name of the output root
     """
-    #print (executable)
-    found = False
-    index = 0
-    outputfile = 'out~'+inputFiles[index].getBase()
-    #printprint (outputfile)
-    if clargs: addflags = clargs['text']
-    else     : addflags = ''
-    #commandToRun = executable + ' -i ' + inputFiles[index].getFilename() + ' -o ' + outputfile  + '.o' + ' -r ' + outputfile  + '.r' + addflags
-    #commandToRun = executable + ' -i ' + inputFiles[index].getFilename() + ' -o ' + outputfile  + '.o' +  addflags
-    commandToRun = executable
-    commandToRun = commandToRun.replace("\n"," ")
-    commandToRun  = re.sub("\s\s+" , " ", commandToRun )
-    #print (commandToRun)
+    dict = self.mapInputFileType(inputFiles)
+    if self.mrtauStandAlone == True: 
+      executable = self.switchExecutable()
+      commandToRun = executable
+    outputfile = 'out~'+inputFiles[dict['inp'.lower()]].getBase()
+    self.instantOutput = self.jobTitle+'.o'
+    if self.mrtauStandAlone == False: 
+      commandToRun = executable + ' ' +inputFiles[dict['inp'.lower()]].getFilename() + ' ' + inputFiles[dict['Xs-library'.lower()]].getFilename() + ' ' + inputFiles[dict['Material'.lower()]].getFilename() + ' ' + inputFiles[dict['Depletion_input'.lower()]].getFilename() + ' ' + self.instantOutput
+      commandToRun = commandToRun.replace("\n"," ")
+      commandToRun  = re.sub("\s\s+" , " ", commandToRun )
     returnCommand = [('parallel',commandToRun)], outputfile
-    #print (commandToRun)
-    #print (returnCommand)
     return returnCommand
-  
+    
   def finalizeCodeOutput(self,command,output,workingDir):
     """
       This method is called by the RAVEN code at the end of each run (if the method is present, since it is optional).
       It can be used for those codes, that do not create CSV files to convert the whatever output format into a csv
+      This methods also calls the method 'mergeOutput' if MPI mode is used, in order to merge all the output files into one 
       @ In, command, string, the command used to run the just ended job
       @ In, output, string, the Output name root
       @ In, workingDir, string, current working dir
       @ Out, output, string, optional, present in case the root of the output file gets changed in this method.
     """
-    output = 'Dpl_INSTANT.outp-0'
-    #print (command)
-    #print (workingDir)
-    #print (output) 
-    #outfile = os.path.join(workingDir,output+'.o')
     splitWorkDir = workingDir.split('/')
     pertNumber = splitWorkDir[-1]
-    outputobj=phisicsdata.phisicsdata(output, workingDir)
-    return "keff"+str(pertNumber).strip()
-    #if outputobj.hasAtLeastMinorData(): outputobj.writeCSV(os.path.join(workingDir,output+'.csv'))
-    #else: raise IOError('Relap5 output file '+ command.split('-o')[0].split('-i')[-1].strip()+'.o' + ' does not contain any minor edits. It might be crashed!')
-
-  def checkForOutputFailure(self,output,workingDir):
+    outputobj=phisicsdata.phisicsdata(self.instantOutput,workingDir,self.mrtauStandAlone,self.jobTitle,self.outputFileNameDict,self.numberOfMPI)
+    if self.mrtauStandAlone == False:
+      return self.jobTitle+str(pertNumber).strip()
+    if self.mrtauStandAlone == True:
+      return 'mrtau'+str(pertNumber).strip()
+  
+  def mapInputFileType(self,currentInputFiles):
     """
-      This method is called by the RAVEN code at the end of each run  if the return code is == 0.
-      This method needs to be implemented by the codes that, if the run fails, return a return code that is 0
-      This can happen in those codes that record the failure of the job (e.g. not converged, etc.) as normal termination (returncode == 0)
-      This method can be used, for example, to parse the outputfile looking for a special keyword that testifies that a particular job got failed
-      (e.g. in RELAP5 would be the keyword "********")
-      @ In, output, string, the Output name root
-      @ In, workingDir, string, current working dir
-      @ Out, failure, bool, True if the job is failed, False otherwise
+      Assigns a number to the input file Types 
+      @ In, currentInputFiles,  list,  list of current input files (input files from last this method call)
+      @ Out, keyWordDict, dictionary, dictionary have input file types as keyword, and its related order of appearance (interger) as value
     """
-    #from  __builtin__ import any as bAny
-    #failure = True
-    #errorWord = ["ERROR the number of materials in mat_map_to_instant block"]
-    #try   : outputToRead = open(os.path.join(workingDir,output+'.o'),"r")
-    #except: return failure
-    #readLines = outputToRead.readlines()
-    #for goodMsg in errorWord:
-    #  if bAny(goodMsg in x for x in readLines):
-    #    failure = False
-    #    break
-    
-    
-    failure = False
-    return failure
-
+    keyWordDict = {} 
+    count = 0
+    for inFile in currentInputFiles:
+      keyWordDict[inFile.getType().lower()] = count 
+      count = count + 1
+    return keyWordDict
+      
   def createNewInput(self,currentInputFiles,oriInputFiles,samplerType,**Kwargs):
     """
       this generate a new input file depending on which sampler is chosen
@@ -223,28 +309,31 @@ class Phisics(CodeInterfaceBase):
     import QValuesParser
     import MaterialParser
     import PathParser
+    import XSCreator
     
-    keyWordDict = {}
-    
-    directoryFiles = ['path','library_fiss','input_dpl']
-    #print (currentInputFiles)
-    driverXML = 'test_phisics_code_interface.xml'
-    keyWordDict = self.mapFile(driverXML)
-    #print (keyWordDict)
-    perturbedVars = Kwargs['SampledVars']
+    self.typeDict = {}
+    perturbedVars = Kwargs['SampledVars']    
+    self.typeDict = self.mapInputFileType(currentInputFiles)
     distributedPerturbedVars = self.distributeVariablesToParsers(perturbedVars)
-    for i in distributedPerturbedVars.iterkeys():
-      if i == 'DECAY'         : decayParser        = DecayParser.DecayParser(currentInputFiles[keyWordDict['decay']].getAbsFile(), **distributedPerturbedVars[i])
-      if i == 'DENSITY'       : materialParser     = MaterialParser.MaterialParser(currentInputFiles[keyWordDict['material']].getAbsFile(), **distributedPerturbedVars[i])
-      if i == 'FY'            : FissionYieldParser = FissionYieldParser.FissionYieldParser(currentInputFiles[keyWordDict['fissionyield']].getAbsFile(), **distributedPerturbedVars[i])
-      if i == 'QVALUES'       : QValuesParser      = QValuesParser.QValuesParser(currentInputFiles[keyWordDict['fissqvalue']].getAbsFile(), **distributedPerturbedVars[i])
-      if i == 'ALPHADECAY'    : BetaDecayParser    = PathParser.PathParser(currentInputFiles[keyWordDict['alphadecay']].getAbsFile(), **distributedPerturbedVars[i])
-      if i == 'BETA+DECAY'    : BetaDecayParser    = PathParser.PathParser(currentInputFiles[keyWordDict['beta+decay']].getAbsFile(), **distributedPerturbedVars[i])
-      if i == 'BETA+XDECAY'   : BetaDecayParser    = PathParser.PathParser(currentInputFiles[keyWordDict['beta+xdecay']].getAbsFile(), **distributedPerturbedVars[i])
-      if i == 'BETADECAY'     : BetaDecayParser    = PathParser.PathParser(currentInputFiles[keyWordDict['betadecay']].getAbsFile(), **distributedPerturbedVars[i])
-      if i == 'BETAXDECAY'    : BetaDecayParser    = PathParser.PathParser(currentInputFiles[keyWordDict['betaxdecay']].getAbsFile(), **distributedPerturbedVars[i])
-      if i == 'INTTRADECAY'  : BetaDecayParser     = PathParser.PathParser(currentInputFiles[keyWordDict['inttradecay']].getAbsFile(), **distributedPerturbedVars[i])
+    booleanTab = self.tabulation 
+    self.jobTitle = self.parseControlOptions(currentInputFiles[self.typeDict['depletion_input']].getAbsFile(), currentInputFiles[self.typeDict['path']].getAbsFile()) 
+    self.syncLibPathFileWithRavenInp(currentInputFiles[self.typeDict['path']].getAbsFile(),currentInputFiles,self.typeDict)
+    self.outputFileNames(currentInputFiles[self.typeDict['path']].getAbsFile())
+    if Kwargs['precommand'] == '': self.numberOfMPI = 1 
+    else                         : self.numberOfMPI = self.getNumberOfMPI(Kwargs['precommand'])   
     
+    for i in distributedPerturbedVars.iterkeys():
+      if i == 'DECAY'         : DecayParser.DecayParser(currentInputFiles[self.typeDict['decay']].getAbsFile(), **distributedPerturbedVars[i])
+      if i == 'DENSITY'       : MaterialParser.MaterialParser(currentInputFiles[self.typeDict['material']].getAbsFile(), **distributedPerturbedVars[i])
+      if i == 'FY'            : FissionYieldParser.FissionYieldParser(currentInputFiles[self.typeDict['fissionyield']].getAbsFile(), **distributedPerturbedVars[i])
+      if i == 'QVALUES'       : QValuesParser.QValuesParser(currentInputFiles[self.typeDict['fissqvalue']].getAbsFile(), **distributedPerturbedVars[i])
+      if i == 'ALPHADECAY'    : PathParser.PathParser(currentInputFiles[self.typeDict['alphadecay']].getAbsFile(), **distributedPerturbedVars[i])
+      if i == 'BETA+DECAY'    : PathParser.PathParser(currentInputFiles[self.typeDict['beta+decay']].getAbsFile(), **distributedPerturbedVars[i])
+      if i == 'BETA+XDECAY'   : PathParser.PathParser(currentInputFiles[self.typeDict['beta+xdecay']].getAbsFile(), **distributedPerturbedVars[i])
+      if i == 'BETADECAY'     : PathParser.PathParser(currentInputFiles[self.typeDict['betadecay']].getAbsFile(), **distributedPerturbedVars[i])
+      if i == 'BETAXDECAY'    : PathParser.PathParser(currentInputFiles[self.typeDict['betaxdecay']].getAbsFile(), **distributedPerturbedVars[i])
+      if i == 'INTTRADECAY'   : PathParser.PathParser(currentInputFiles[self.typeDict['inttradecay']].getAbsFile(), **distributedPerturbedVars[i])
+      if i == 'XS'            : XSCreator.XSCreator(currentInputFiles[self.typeDict['xs']].getAbsFile(), booleanTab, **distributedPerturbedVars[i])
     return currentInputFiles
     
 
